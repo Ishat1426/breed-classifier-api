@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import tensorflow as tf
 import numpy as np
 from PIL import Image
+import json
 
 # -------------------------
 # Initialize app
@@ -10,23 +11,25 @@ app = Flask(__name__)
 
 # Load your trained model
 MODEL_PATH = "best_breed_classifier.keras"
-try:
-    # A try-except block is good practice for model loading
-    model = tf.keras.models.load_model(MODEL_PATH)
-    print("Model loaded successfully!")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
+model = tf.keras.models.load_model(MODEL_PATH)
 
-# Define image size (must match training size!)
-# The error you showed previously indicated your model expects (225, 225)
-# This is a critical detail to get right.
-IMG_SIZE = (225, 225) 
+# -------------------------
+# Load class names
+# -------------------------
+# You need to have a JSON file with class names saved during training
+# Example: {"0": "Gir", "1": "Sahiwal", "2": "Jersey", ...}
+CLASS_NAMES_PATH = "class_names.json"
+with open(CLASS_NAMES_PATH, "r") as f:
+    class_names = json.load(f)
+
+# -------------------------
+# Define image size
+# -------------------------
+IMG_SIZE = (224, 224)
 
 # -------------------------
 # Routes
 # -------------------------
-
 @app.route("/")
 def home():
     return jsonify({"message": "Breed Classifier API is running 🚀"})
@@ -34,52 +37,39 @@ def home():
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        # Check if the request contains an image file
         if "file" not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
 
         file = request.files["file"]
-        if file.filename == "":
-            return jsonify({"error": "No selected file"}), 400
-
-        # Open the image using Pillow. 
-        # The .convert("RGB") method handles the conversion for us,
-        # making sure the image has 3 channels (Red, Green, Blue).
+        # Load image and ensure RGB
         image = Image.open(file.stream).convert("RGB")
-        
-        # Resize the image to match the size your model was trained on
         image = image.resize(IMG_SIZE)
-        
-        # Convert the image to a NumPy array and normalize pixel values to 0-1
-        image_array = np.array(image) / 255.0
-        
-        # Add a batch dimension to the array.
-        # Your model expects input in the shape (batch_size, height, width, channels).
-        # We add 'axis=0' to create the batch dimension for a single image.
+        image_array = np.array(image)
+
+        # EfficientNet preprocessing
+        image_array = tf.keras.applications.efficientnet.preprocess_input(image_array)
+
+        # Add batch dimension
         image_array = np.expand_dims(image_array, axis=0)
 
-        # Predict using the preprocessed image
+        # Predict
         predictions = model.predict(image_array)
-        
-        # Get the class with the highest confidence
-        predicted_class = int(np.argmax(predictions, axis=1)[0])
+        predicted_index = int(np.argmax(predictions, axis=1)[0])
         confidence = float(np.max(predictions))
 
+        # Map index to actual breed name
+        predicted_breed = class_names[str(predicted_index)]
+
         return jsonify({
-            "predicted_class": predicted_class,
+            "predicted_breed": predicted_breed,
             "confidence": confidence
         })
 
     except Exception as e:
-        # Provide a more informative error message for debugging
-        return jsonify({"error": f"Prediction failed: {str(e)}", "trace": "Make sure your model path is correct and the image is not corrupted."}), 500
-
+        return jsonify({"error": str(e)}), 500
 
 # -------------------------
 # Run app
 # -------------------------
 if __name__ == "__main__":
-    if model:
-        app.run(host="0.0.0.0", port=5000, debug=True)
-    else:
-        print("Application will not run due to model loading error.")
+    app.run(host="0.0.0.0", port=5000, debug=True)
